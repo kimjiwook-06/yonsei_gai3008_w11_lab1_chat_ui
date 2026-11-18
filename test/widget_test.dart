@@ -8,7 +8,7 @@ void main() {
     await tester.pumpWidget(const ChatLabApp());
 
     // 제목
-    expect(find.text('AI Chat — 실습 1'), findsOneWidget);
+    expect(find.text('AI Chat — 실습 1 · 4'), findsOneWidget);
 
     // 할 일 1이 끝났다면 목록이 그려진다
     expect(find.byType(ListView), findsOneWidget);
@@ -30,6 +30,8 @@ void main() {
       tester.widget<TextField>(find.byType(TextField)).controller?.text,
       isEmpty,
     );
+
+    await finishAttempt(tester);
 
     // 공백만 입력하면 아무것도 추가되지 않는다
     await tester.enterText(find.byType(TextField), '   ');
@@ -53,6 +55,7 @@ void main() {
 
     expect(find.text('무엇이든 물어보세요'), findsNothing);
     expect(find.text('안녕하세요'), findsOneWidget);
+    await finishAttempt(tester);
   });
 
   testWidgets('키보드가 올라와도 입력창이 가려지지 않는다', (WidgetTester tester) async {
@@ -74,4 +77,87 @@ void main() {
     final inputRect = tester.getRect(find.byType(TextField));
     expect(inputRect.bottom, lessThanOrEqualTo(keyboardTop));
   });
+
+  for (final error in ['401', '500', 'Timeout']) {
+    testWidgets('$error 오류를 표시하고 같은 메시지를 다시 보낸다', (tester) async {
+      await tester.pumpWidget(const ChatLabApp());
+      await chooseScenario(tester, '$error 오류');
+      await sendMessage(tester, '재시도할 메시지');
+      await finishAttempt(tester);
+
+      expect(find.textContaining('$error ·'), findsOneWidget);
+      await tester.enterText(find.byType(TextField), '작성 중인 메시지');
+      await tester.tap(find.text('다시 시도'));
+      await tester.pump();
+      await finishAttempt(tester);
+
+      expect(find.textContaining('$error ·'), findsNothing);
+      expect(find.text('재시도할 메시지'), findsOneWidget);
+      expect(find.text('메시지를 받았어요.\n“재시도할 메시지”'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '작성 중인 메시지',
+      );
+    });
+  }
+
+  for (final recovers in [false, true]) {
+    testWidgets('429 오류는 1초와 2초를 기다린 뒤 재시도한다 (복구: $recovers)', (tester) async {
+      await tester.pumpWidget(const ChatLabApp());
+      await chooseScenario(tester, recovers ? '429 후 정상 응답' : '429 오류');
+      await sendMessage(tester, '백오프 테스트');
+
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump(const Duration(milliseconds: 350));
+      await tester.pump(const Duration(milliseconds: 1999));
+      expect(find.text('응답을 기다리는 중…'), findsOneWidget);
+      expect(find.text('다시 시도'), findsNothing);
+
+      await tester.pump(const Duration(milliseconds: 1));
+      await finishAttempt(tester);
+      if (recovers) {
+        expect(find.text('메시지를 받았어요.\n“백오프 테스트”'), findsOneWidget);
+      } else {
+        expect(find.textContaining('429 ·'), findsOneWidget);
+        expect(find.text('다시 시도'), findsOneWidget);
+      }
+    });
+  }
+
+  testWidgets('오류가 난 뒤에도 새 메시지를 보낼 수 있다', (tester) async {
+    await tester.pumpWidget(const ChatLabApp());
+    await chooseScenario(tester, '500 오류');
+    await sendMessage(tester, '실패한 메시지');
+    await finishAttempt(tester);
+
+    await chooseScenario(tester, '정상 응답');
+    await sendMessage(tester, '새 메시지');
+    await finishAttempt(tester);
+    expect(find.textContaining('500 ·'), findsOneWidget);
+    expect(find.text('메시지를 받았어요.\n“새 메시지”'), findsOneWidget);
+  });
+}
+
+Future<void> chooseScenario(WidgetTester tester, String scenario) async {
+  await tester.tap(find.byTooltip('응답 시나리오'));
+  await tester.pumpAndSettle();
+  await tester.tap(
+    find.ancestor(
+      of: find.text(scenario),
+      matching: find.byWidgetPredicate((widget) => widget is PopupMenuItem),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+Future<void> sendMessage(WidgetTester tester, String text) async {
+  await tester.enterText(find.byType(TextField), text);
+  await tester.tap(find.byIcon(Icons.send));
+  await tester.pump();
+}
+
+Future<void> finishAttempt(WidgetTester tester) async {
+  await tester.pump(const Duration(milliseconds: 350));
+  await tester.pumpAndSettle();
 }
